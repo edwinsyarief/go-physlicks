@@ -1,8 +1,10 @@
-# GO-Physlicks
+# GO-Physlicks (WIP)
 
 ## Features
 
 GO-Physlicks is a lightweight 2D physics engine written in Go, designed for game development. Here are its key features:
+
+***Note: This is still a work in progress.***
 
 ## Core Physics Components
 
