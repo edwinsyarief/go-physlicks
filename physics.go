@@ -415,17 +415,71 @@ func (qt *Quadtree) Query(aabb AABB) []Shape {
 
 // PhysicsSystem manages shapes and collision detection.
 type PhysicsSystem struct {
-	shapes   []Shape
-	quadtree *Quadtree
-	nextID   int
+	shapes        []Shape
+	quadtree      *Quadtree
+	nextID        int
+	worldSize     Point
+	velocities    map[int]Point
+	angVelocities map[int]float64
+	gravity       Point
 }
 
 // NewPhysicsSystem initializes a physics system with a quadtree.
 func NewPhysicsSystem(bounds AABB, capacity int, maxDepth int) *PhysicsSystem {
 	return &PhysicsSystem{
-		shapes:   []Shape{},
-		quadtree: NewQuadtree(bounds, capacity, 0, maxDepth),
-		nextID:   0,
+		shapes:        []Shape{},
+		quadtree:      NewQuadtree(bounds, capacity, 0, maxDepth),
+		nextID:        0,
+		worldSize:     Point{X: bounds.Max.X - bounds.Min.X, Y: bounds.Max.Y - bounds.Min.Y},
+		velocities:    make(map[int]Point),
+		angVelocities: make(map[int]float64),
+		gravity:       Point{X: 0, Y: 0},
+	}
+}
+
+// Update updates the physics system state including gravity, positions, rotations, and collisions.
+func (ps *PhysicsSystem) Update() {
+	// Apply gravity to velocities
+	for _, shape := range ps.shapes {
+		vel := ps.velocities[shape.GetID()]
+		ps.velocities[shape.GetID()] = vel.Add(ps.gravity)
+	}
+
+	// Update positions and rotations
+	for _, shape := range ps.shapes {
+		vel := ps.velocities[shape.GetID()]
+		angVel := ps.angVelocities[shape.GetID()]
+		shape.Move(vel)
+		shape.SetRotation(shape.GetRotation() + angVel)
+
+		// Clamp to screen boundaries
+		aabb := shape.GetAABB()
+		if aabb.Min.X < 0 {
+			shape.Move(Point{X: -aabb.Min.X, Y: 0})
+			ps.velocities[shape.GetID()] = Point{X: -vel.X * shape.GetElasticity(), Y: vel.Y}
+			ps.angVelocities[shape.GetID()] = -angVel * shape.GetElasticity()
+		}
+		if aabb.Max.X > ps.worldSize.X {
+			shape.Move(Point{X: ps.worldSize.X - aabb.Max.X, Y: 0})
+			ps.velocities[shape.GetID()] = Point{X: -vel.X * shape.GetElasticity(), Y: vel.Y}
+			ps.angVelocities[shape.GetID()] = -angVel * shape.GetElasticity()
+		}
+		if aabb.Min.Y < 0 {
+			shape.Move(Point{X: 0, Y: -aabb.Min.Y})
+			ps.velocities[shape.GetID()] = Point{X: vel.X, Y: -vel.Y * shape.GetElasticity()}
+			ps.angVelocities[shape.GetID()] = -angVel * shape.GetElasticity()
+		}
+		if aabb.Max.Y > ps.worldSize.Y {
+			shape.Move(Point{X: 0, Y: ps.worldSize.Y - aabb.Max.Y})
+			ps.velocities[shape.GetID()] = Point{X: vel.X, Y: -vel.Y * shape.GetElasticity()}
+			ps.angVelocities[shape.GetID()] = -angVel * shape.GetElasticity()
+		}
+	}
+
+	// Handle collisions
+	collidingPairs := ps.DetectCollisions()
+	for _, pair := range collidingPairs {
+		resolveCollision(pair[0], pair[1], ps.velocities, ps.angVelocities)
 	}
 }
 
@@ -434,11 +488,13 @@ func (ps *PhysicsSystem) GetShapes() []Shape {
 	return ps.shapes
 }
 
-// AddShape adds a shape to the system.
-func (ps *PhysicsSystem) AddShape(s Shape) {
+// AddShape adds a shape to the system with initial velocity and angular velocity.
+func (ps *PhysicsSystem) AddShape(s Shape, velocity Point, angularVelocity float64) {
 	s.SetID(ps.nextID)
 	ps.nextID++
 	ps.shapes = append(ps.shapes, s)
+	ps.velocities[s.GetID()] = velocity
+	ps.angVelocities[s.GetID()] = angularVelocity
 }
 
 // DetectCollisions finds all colliding pairs using the quadtree.
@@ -529,6 +585,75 @@ func (ps *PhysicsSystem) getShapeByID(id int) Shape {
 		}
 	}
 	return nil
+}
+
+// resolveCollision resolves the collision with impulse-based physics including rotation.
+func resolveCollision(shape1, shape2 Shape, velocities map[int]Point, angVelocities map[int]float64) {
+	// Get velocities and properties
+	v1 := velocities[shape1.GetID()]
+	v2 := velocities[shape2.GetID()]
+	w1 := angVelocities[shape1.GetID()]
+	w2 := angVelocities[shape2.GetID()]
+	m1 := shape1.GetMass()
+	m2 := shape2.GetMass()
+	i1 := shape1.GetMomentOfInertia()
+	i2 := shape2.GetMomentOfInertia()
+	e := (shape1.GetElasticity() + shape2.GetElasticity()) / 2
+
+	// Approximate contact point as midpoint (for simplicity; could refine with SAT)
+	contact := shape1.GetPosition().Add(shape2.GetPosition()).Scale(0.5)
+
+	// Vectors from centers to contact point
+	r1 := contact.Sub(shape1.GetPosition())
+	r2 := contact.Sub(shape2.GetPosition())
+
+	// Collision normal using accurate computation
+	normal := GetCollisionNormal(shape1, shape2)
+
+	// Relative velocity at contact point, including rotational effects
+	v1AtContact := v1.Add(r1.Perpendicular().Scale(w1))
+	v2AtContact := v2.Add(r2.Perpendicular().Scale(w2))
+	rv := v2AtContact.Sub(v1AtContact)
+	vn := Dot(rv, normal)
+
+	// If moving apart, no impulse needed
+	if vn > 0 {
+		return
+	}
+
+	// Impulse calculation
+	// j = -(1 + e) * vn / (1/m1 + 1/m2 + (r1 x n)^2 / I1 + (r2 x n)^2 / I2)
+	r1CrossN := r1.X*normal.Y - r1.Y*normal.X
+	r2CrossN := r2.X*normal.Y - r2.Y*normal.X
+	denominator := (1/m1 + 1/m2) + (r1CrossN*r1CrossN)/i1 + (r2CrossN*r2CrossN)/i2
+	if denominator == 0 {
+		return
+	}
+	j := -(1 + e) * vn / denominator
+
+	// Apply impulse
+	impulse := normal.Scale(j)
+	if m1 > 0 {
+		v1 = v1.Sub(impulse.Scale(1 / m1))
+	}
+	if m2 > 0 {
+		v2 = v2.Add(impulse.Scale(1 / m2))
+	}
+	if i1 > 0 {
+		w1 -= r1CrossN * j / i1
+	}
+	if i2 > 0 {
+		w2 += r2CrossN * j / i2
+	}
+
+	// Update velocities
+	velocities[shape1.GetID()] = v1
+	velocities[shape2.GetID()] = v2
+	angVelocities[shape1.GetID()] = w1
+	angVelocities[shape2.GetID()] = w2
+
+	// Position correction
+	OverlapAdjustment(shape1, shape2, normal)
 }
 
 // OverlapAdjustment adjusts positions to prevent overlap.
