@@ -425,7 +425,7 @@ type PhysicsSystem struct {
 }
 
 // NewPhysicsSystem initializes a physics system with a quadtree.
-func NewPhysicsSystem(bounds AABB, capacity int, maxDepth int) *PhysicsSystem {
+func NewPhysicsSystem(bounds AABB, gravity Point, capacity int, maxDepth int) *PhysicsSystem {
 	return &PhysicsSystem{
 		shapes:        []Shape{},
 		quadtree:      NewQuadtree(bounds, capacity, 0, maxDepth),
@@ -433,7 +433,7 @@ func NewPhysicsSystem(bounds AABB, capacity int, maxDepth int) *PhysicsSystem {
 		worldSize:     Point{X: bounds.Max.X - bounds.Min.X, Y: bounds.Max.Y - bounds.Min.Y},
 		velocities:    make(map[int]Point),
 		angVelocities: make(map[int]float64),
-		gravity:       Point{X: 0, Y: 0},
+		gravity:       gravity,
 	}
 }
 

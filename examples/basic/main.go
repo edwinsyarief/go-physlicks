@@ -83,7 +83,7 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 	bounds := physics.AABB{Min: physics.Point{X: 0, Y: 0}, Max: physics.Point{X: screenWidth, Y: screenHeight}}
-	physicsSystem := physics.NewPhysicsSystem(bounds, quadtreeCapacity, quadtreeMaxDepth)
+	physicsSystem := physics.NewPhysicsSystem(bounds, physics.Point{X: 0, Y: 0.1}, quadtreeCapacity, quadtreeMaxDepth)
 
 	// Add circles
 	for i := 0; i < numCircles; i++ {
